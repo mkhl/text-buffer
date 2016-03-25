@@ -1,6 +1,84 @@
 Point = require './point'
 {newlineRegex} = require './helpers'
 
+class Cut
+  @fromObject: (object, above) ->
+    if object instanceof Cut
+      return object
+    new Cut(object, above)
+
+  @below: (point) ->
+    new Cut(point, false)
+
+  @above: (point) ->
+    new Cut(point, true)
+
+  @deserialize: (array) ->
+    if Array.isArray(array)
+      new this(array[0], array[1])
+    else
+      throw new Error('???')
+
+  constructor: (point, above) ->
+    unless this instanceof Cut
+      return new Cut(point, above)
+    @point = Point.fromObject(point)
+    @above = above
+
+  serialize: ->
+    [@point, @above]
+
+  copy: ->
+    new Cut(@point, @above)
+
+  freeze: ->
+    @point.freeze()
+    Object.freeze(this)
+
+  update: (callback) ->
+    new Cut(callback(@point), @above)
+
+  compare: (other) ->
+    if other instanceof Cut
+      return if value = @point.compare(other.point)
+        value
+      else
+        @above - other.above
+    other = Point.fromObject(other)
+    if value = @point.compare(other)
+      value
+    else if @above
+      1
+    else
+      -1
+
+  isEqual: (other) ->
+    compare(other) == 0
+
+  isLessThan: (other) ->
+    compare(other) < 0
+
+  isLessThanOrEqual: (other) ->
+    compare(other) <= 0
+
+  isGreaterThan: (other) ->
+    compare(other) > 0
+
+  isGreaterThanOrEqual: (other) ->
+    compare(other) >= 0
+
+  @min: (a, b) ->
+    if a.compare(b) < 0
+      a
+    else
+      b
+
+  @max: (a, b) ->
+    if a.compare(b) > 0
+      a
+    else
+      b
+
 # Public: Represents a region in a buffer in row/column coordinates.
 #
 # Every public method that takes a range also accepts a *range-compatible*
@@ -85,6 +163,26 @@ class Range
     endPoint = new Point(startPoint.row + rowDelta, startPoint.column + columnDelta)
     new this(startPoint, endPoint)
 
+  @open: (startPoint, endPoint) ->
+    startPoint = Cut.above(Point.fromObject(startPoint))
+    endPoint = Cut.below(Point.fromObject(endPoint))
+    new this(startPoint, endPoint)
+
+  @closed: (startPoint, endPoint) ->
+    startPoint = Cut.below(Point.fromObject(startPoint))
+    endPoint = Cut.above(Point.fromObject(endPoint))
+    new this(startPoint, endPoint)
+
+  @openClosed: (startPoint, endPoint) ->
+    startPoint = Cut.above(Point.fromObject(startPoint))
+    endPoint = Cut.above(Point.fromObject(endPoint))
+    new this(startPoint, endPoint)
+
+  @closedOpen: (startPoint, endPoint) ->
+    startPoint = Cut.below(Point.fromObject(startPoint))
+    endPoint = Cut.below(Point.fromObject(endPoint))
+    new this(startPoint, endPoint)
+
   ###
   Section: Serialization and Deserialization
   ###
@@ -106,12 +204,12 @@ class Range
   #
   # * `pointA` {Point} or Point compatible {Array} (default: [0,0])
   # * `pointB` {Point} or Point compatible {Array} (default: [0,0])
-  constructor: (pointA = new Point(0, 0), pointB = new Point(0, 0)) ->
+  constructor: (pointA = new Point(0, 0), pointB = new Point(0, 0), aboveA = false, aboveB = true) ->
     unless this instanceof Range
       return new Range(pointA, pointB)
 
-    pointA = Point.fromObject(pointA)
-    pointB = Point.fromObject(pointB)
+    pointA = Cut.fromObject(pointA, aboveA)
+    pointB = Cut.fromObject(pointB, aboveB)
 
     if pointA.isLessThanOrEqual(pointB)
       @start = pointA
@@ -126,7 +224,9 @@ class Range
 
   # Public: Returns a new range with the start and end positions negated.
   negate: ->
-    new @constructor(@start.negate(), @end.negate())
+    negate = (point) ->
+      point.negate()
+    new @constructor(@start.update(negate), @end.update(negate))
 
   ###
   Section: Serialization and Deserialization
@@ -191,7 +291,10 @@ class Range
   #
   # Returns a {Range}.
   translate: (startDelta, endDelta=startDelta) ->
-    new @constructor(@start.translate(startDelta), @end.translate(endDelta))
+    translate = (delta) ->
+      (point) ->
+        point.translate(delta)
+    new @constructor(@start.update(translate(startDelta)), @end.update(translate(endDelta)))
 
   # Public: Build and return a new range by traversing this range's start and
   # end points by the given delta.
@@ -203,7 +306,9 @@ class Range
   #
   # Returns a {Range}.
   traverse: (delta) ->
-    new @constructor(@start.traverse(delta), @end.traverse(delta))
+    traverse = (point) ->
+      point.traverse(delta)
+    new @constructor(@start.update(traverse), @end.update(traverse))
 
   ###
   Section: Comparison
@@ -271,9 +376,9 @@ class Range
   containsPoint: (point, exclusive) ->
     point = Point.fromObject(point)
     if exclusive
-      point.isGreaterThan(@start) and point.isLessThan(@end)
+      @start.isLessThan(point) and @end.isGreaterThan(point)
     else
-      point.isGreaterThanOrEqual(@start) and point.isLessThanOrEqual(@end)
+      @start.isLessThanOrEqual(point) and @end.isGreaterThanOrEqual(point)
 
   # Public: Returns a {Boolean} indicating whether this range intersects the
   # given row {Number}.
@@ -292,7 +397,7 @@ class Range
     @end.row >= startRow and endRow >= @start.row
 
   getExtent: ->
-    @end.traversalFrom(@start)
+    @end.point.traversalFrom(@start.point)
 
   ###
   Section: Conversion
@@ -308,4 +413,6 @@ class Range
 
   # Public: Returns a string representation of the range.
   toString: ->
-    "[#{@start} - #{@end}]"
+    left = if @start.above then "(" else ")"
+    right = if @end.above then "]" else "("
+    "#{left}#{@start}…#{@end}#{right}"
